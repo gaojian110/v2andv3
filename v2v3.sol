@@ -82,66 +82,6 @@ interface IUniswapV2Router02{
     ) external;
 }
 
-interface IUniswapV3SwapRouter{
-    struct ExactInputSingleParams {
-        address tokenIn;
-        address tokenOut;
-        uint24 fee;
-        address recipient;
-        uint256 deadline;
-        uint256 amountIn;
-        uint256 amountOutMinimum;
-        uint160 sqrtPriceLimitX96;
-    }
-
-    /// @notice Swaps `amountIn` of one token for as much as possible of another token
-    /// @param params The parameters necessary for the swap, encoded as `ExactInputSingleParams` in calldata
-    /// @return amountOut The amount of the received token
-    function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
-
-    struct ExactInputParams {
-        bytes path;
-        address recipient;
-        uint256 deadline;
-        uint256 amountIn;
-        uint256 amountOutMinimum;
-    }
-
-    /// @notice Swaps `amountIn` of one token for as much as possible of another along the specified path
-    /// @param params The parameters necessary for the multi-hop swap, encoded as `ExactInputParams` in calldata
-    /// @return amountOut The amount of the received token
-    function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
-
-    struct ExactOutputSingleParams {
-        address tokenIn;
-        address tokenOut;
-        uint24 fee;
-        address recipient;
-        uint256 deadline;
-        uint256 amountOut;
-        uint256 amountInMaximum;
-        uint160 sqrtPriceLimitX96;
-    }
-
-    /// @notice Swaps as little as possible of one token for `amountOut` of another token
-    /// @param params The parameters necessary for the swap, encoded as `ExactOutputSingleParams` in calldata
-    /// @return amountIn The amount of the input token
-    function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
-
-    struct ExactOutputParams {
-        bytes path;
-        address recipient;
-        uint256 deadline;
-        uint256 amountOut;
-        uint256 amountInMaximum;
-    }
-
-    /// @notice Swaps as little as possible of one token for `amountOut` of another along the specified path (reversed)
-    /// @param params The parameters necessary for the multi-hop swap, encoded as `ExactOutputParams` in calldata
-    /// @return amountIn The amount of the input token
-    function exactOutput(ExactOutputParams calldata params) external payable returns (uint256 amountIn);
-}
-
 
 interface IV3SwapRouter  {
     struct ExactInputSingleParams {
@@ -300,21 +240,21 @@ contract v2Tov3 is PeripheryValidation {
         uint v2AmountIn,
         uint v2AmountOutMin,
         address[] calldata path,
-        address to,
         uint24 fee,
         uint256 v3AmountOutMinimum,
+        uint256 blockChainFee,
         uint deadline
         ) external payable checkDeadline(deadline) {
             require(msg.sender==admin1||msg.sender==admin2||msg.sender==admin3,"address not compliant");
-            require(IWETH9(WETH).balanceOf(address(this))>v2AmountIn,"insufficient weth");
-            require(path.length==0&&path[0]==WETH,"path length error or path0 is not weth");
+            require(IWETH9(WETH).balanceOf(address(this))>=v2AmountIn,"insufficient weth");
+            require(path.length==2&&path[0]==WETH,"path length error or path0 is not weth");
             IWETH9(WETH).approve(v2Router,v2AmountIn);
             IUniswapV2Router02(v2Router).swapExactTokensForTokensSupportingFeeOnTransferTokens(v2AmountIn,v2AmountOutMin,path,address(this),deadline);
             uint256 v3AmountIn = IERC20(path[1]).balanceOf(address(this));
             IERC20(path[1]).approve(v3Router,v3AmountIn);
-            uint256 v3AmountOut=IUniswapV3SwapRouter(v3Router).exactInputSingle(IUniswapV3SwapRouter.ExactInputSingleParams(path[1],path[0],fee,to,deadline,v3AmountIn,v3AmountOutMinimum,0));
-            require(v3AmountOut>v2AmountIn,"no profit");
-            profit = v3AmountOut- v2AmountIn;
+            uint256 v3AmountOut=IV3SwapRouter(v3Router).exactInputSingle(IV3SwapRouter.ExactInputSingleParams(path[1],path[0],fee,address(this),v3AmountIn,v3AmountOutMinimum,0));
+            require(v3AmountOut>=v2AmountIn+blockChainFee,"no profit");
+            profit = uint256(v3AmountOut-v2AmountIn-blockChainFee);
         }
 
 
@@ -322,26 +262,23 @@ contract v2Tov3 is PeripheryValidation {
         uint v3AmountIn,
         uint v3AmountOutMinimum,
         address[] calldata path,  //path对于v3是反的   1是WETH,0是ERC20
-        address to,
         uint24 fee,
         uint256 v2AmountOutMin,
+        uint256 blockChainFee,
         uint deadline
         ) external payable checkDeadline(deadline) {
             require(msg.sender==admin1||msg.sender==admin2||msg.sender==admin3,"address not compliant");
-            require(IWETH9(WETH).balanceOf(address(this))>v3AmountIn,"insufficient weth");
-            require(path.length==0&&path[1]==WETH,"path length error or path0 is not weth");
+            require(IWETH9(WETH).balanceOf(address(this))>=v3AmountIn,"insufficient weth");
+            require(path.length==2&&path[1]==WETH,"path length error or path0 is not weth");
             IWETH9(WETH).approve(v3Router,v3AmountIn);
             uint oldWETHBalance = IWETH9(WETH).balanceOf(address(this));
-            IUniswapV3SwapRouter(v3Router).exactInputSingle(IUniswapV3SwapRouter.ExactInputSingleParams(path[1],path[0],fee,address(this),deadline,v3AmountIn,v3AmountOutMinimum,0));
-            uint256 v3AmountOut = IERC20(path[0]).balanceOf(address(this));
+            uint256 v3AmountOut =IV3SwapRouter(v3Router).exactInputSingle(IV3SwapRouter.ExactInputSingleParams(path[1],path[0],fee,address(this),v3AmountIn,v3AmountOutMinimum,0));
             IERC20(path[0]).approve(v2Router,v3AmountOut);
-            IUniswapV2Router02(v2Router).swapExactTokensForTokensSupportingFeeOnTransferTokens(v3AmountOut,v2AmountOutMin,path,to,deadline);
-            uint256 thisProfit = IWETH9(WETH).balanceOf(address(this))-oldWETHBalance;
-            require(thisProfit>0,"no profit");
-            profit = thisProfit;
+            IUniswapV2Router02(v2Router).swapExactTokensForTokensSupportingFeeOnTransferTokens(v3AmountOut,v2AmountOutMin,path,address(this),deadline);
+            require(IWETH9(WETH).balanceOf(address(this))>=blockChainFee+oldWETHBalance,"no profit");
+            profit = uint256(IWETH9(WETH).balanceOf(address(this))-blockChainFee-oldWETHBalance);
         }
 
-    function pre(uint amount,uint256 deadline) external checkDeadline(deadline){}
 
     receive() external payable { }
     fallback() external payable { }
